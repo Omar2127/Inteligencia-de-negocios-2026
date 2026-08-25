@@ -9,11 +9,35 @@ import warnings
 
 warnings.filterwarnings('ignore')
 
-# Configuración de la página
-st.set_page_config(page_title="StatsBomb - Análisis de Pases", layout="wide")
-st.title("⚽ Visualizador de Pases - FIFA World Cup 2022")
+st.set_page_config(page_title="StatsBomb - Visualizador de Pases", layout="wide")
+st.title("⚽ Visualizador de Pases por Copa del Mundo")
 
-# Carga de datos con caché para optimizar Streamlit Cloud
+# 1. Cargar todas las ediciones de la Copa del Mundo disponibles
+@st.cache_data
+def load_world_cups():
+    competitions = sb.competitions()
+    # Filtrar únicamente los torneos masculinos de la FIFA World Cup
+    wc_editions = competitions[
+        (competitions['competition_name'] == 'FIFA World Cup')
+    ].copy()
+    
+    # Crear etiqueta legible para el selector (ej. "2022 - Qatar")
+    wc_editions['edition_label'] = wc_editions['season_name'] + " (" + wc_editions['competition_gender'] + ")"
+    return wc_editions.sort_values(by='season_name', ascending=False)
+
+# 2. Cargar partidos según el competition_id y season_id seleccionados
+@st.cache_data
+def load_matches(comp_id, season_id):
+    matches = sb.matches(competition_id=comp_id, season_id=season_id)
+    matches['match_label'] = (
+        matches['home_team'] + " vs " + 
+        matches['away_team'] + " (" + 
+        matches['home_score'].astype(str) + "-" + 
+        matches['away_score'].astype(str) + ")"
+    )
+    return matches.sort_values(by='match_date')
+
+# 3. Cargar eventos de pases del partido seleccionado
 @st.cache_data
 def load_match_events(match_id):
     events = sb.events(match_id=match_id)
@@ -34,26 +58,54 @@ def load_match_events(match_id):
     
     return final
 
-# Cargar eventos del partido seleccionado (Match ID: 3857255 - Japón)
-with st.spinner("Cargando datos del partido..."):
-    final = load_match_events(3857255)
+# --- BARRA LATERAL (CONTROLES) ---
+st.sidebar.header("Filtros de Selección")
 
-st.success("¡Datos cargados correctamente!")
+# Cargar ediciones disponibles del Mundial
+world_cups = load_world_cups()
 
-# Sección de vista previa de datos
-if st.checkbox("Mostrar tabla de datos de pases"):
+# Menú desplegable 1: Edición del Mundial
+selected_wc_label = st.sidebar.selectbox(
+    "1. Selecciona la edición del Mundial:",
+    options=world_cups['edition_label'].tolist()
+)
+
+# Obtener IDs de la edición elegida
+selected_wc_row = world_cups[world_cups['edition_label'] == selected_wc_label].iloc[0]
+comp_id = selected_wc_row['competition_id']
+season_id = selected_wc_row['season_id']
+
+# Cargar partidos de la edición elegida
+matches = load_matches(comp_id, season_id)
+
+# Menú desplegable 2: Partido
+selected_match_label = st.sidebar.selectbox(
+    "2. Selecciona el partido:",
+    options=matches['match_label'].tolist()
+)
+
+# Obtener ID del partido seleccionado
+selected_match_id = matches[matches['match_label'] == selected_match_label]['match_id'].values[0]
+
+# --- VISTA PRINCIPAL ---
+st.subheader(f"Mundial {selected_wc_label} — {selected_match_label}")
+
+# Cargar eventos del partido
+with st.spinner("Cargando pases del partido..."):
+    final = load_match_events(selected_match_id)
+
+if st.checkbox("Mostrar datos de pases en tabla"):
     st.dataframe(final.head(10))
 
-# Control interactivo con barra deslizante en Streamlit
-max_min = int(final['minute'].max())
+# Control deslizante del minuto
+max_min = int(final['minute'].max()) if not final.empty else 90
 minuto = st.slider("Selecciona el minuto del partido:", min_value=0, max_value=max_min, value=0)
 
-# Renderizado de la gráfica en Streamlit
+# Graficar el campo y los pases
 fig, ax = plt.subplots(figsize=(10, 7))
 pitch = Pitch(pitch_color='grass', line_color='white', stripe=True)
 pitch.draw(ax=ax)
 
-# Filtrar por el minuto seleccionado
 data_minuto = final[final.minute == minuto]
 
 if not data_minuto.empty:
