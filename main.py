@@ -22,17 +22,23 @@ def load_world_cups():
     wc_editions['edition_label'] = wc_editions['season_name'] + " (" + wc_editions['competition_gender'] + ")"
     return wc_editions.sort_values(by='season_name', ascending=False)
 
-# 2. Cargar todos los partidos de una edición
+# 2. Cargar todos los partidos de una edición (CORREGIDO)
 @st.cache_data
 def load_matches(comp_id, season_id):
     matches = sb.matches(competition_id=comp_id, season_id=season_id)
+    
+    # Manejar nombres de columnas de StatsBomb
+    stage_col = 'competition_stage' if 'competition_stage' in matches.columns else 'stage'
+    matches['stage_display'] = matches[stage_col]
+    
     matches['match_label'] = (
         matches['home_team'] + " vs " + 
         matches['away_team'] + " (" + 
-        matches['home_score'].astype(str) + "-" + 
-        matches['away_score'].astype(str) + ")"
+        matches['home_score'].fillna(0).astype(int).astype(str) + "-" + 
+        matches['away_score'].fillna(0).astype(int).astype(str) + ")"
     )
-    # Detectar si el partido terminó empatado en tiempo regular/extra
+    
+    # Detectar empate
     matches['is_draw'] = matches['home_score'] == matches['away_score']
     return matches.sort_values(by='match_date')
 
@@ -44,22 +50,24 @@ def load_match_events(match_id):
     variables = ['minute', 'second', 'period', 'location', 'pass_end_location',
                  'player', 'pass_recipient', 'team', 'type']
     
-    passes = events[variables]
+    # Verificar columnas existentes
+    available_vars = [col for col in variables if col in events.columns]
+    passes = events[available_vars]
+    
     final = passes[passes['type'] == 'Pass'].copy()
     final.reset_index(drop=True, inplace=True)
     
-    final['x0'] = final.location.apply(lambda x: x[0])
-    final['y0'] = final.location.apply(lambda x: x[1])
-    final['x1'] = final.pass_end_location.apply(lambda x: x[0])
-    final['y1'] = final.pass_end_location.apply(lambda x: x[1])
-    final.drop(columns=['location', 'pass_end_location'], inplace=True)
+    final['x0'] = final.location.apply(lambda x: x[0] if isinstance(x, list) else np.nan)
+    final['y0'] = final.location.apply(lambda x: x[1] if isinstance(x, list) else np.nan)
+    final['x1'] = final.pass_end_location.apply(lambda x: x[0] if isinstance(x, list) else np.nan)
+    final['y1'] = final.pass_end_location.apply(lambda x: x[1] if isinstance(x, list) else np.nan)
+    final.drop(columns=['location', 'pass_end_location'], inplace=True, errors='ignore')
     
     return final
 
 # --- BARRA LATERAL (FILTROS) ---
 st.sidebar.header("Filtros de Selección")
 
-# 1. Edición del Mundial
 world_cups = load_world_cups()
 selected_wc_label = st.sidebar.selectbox(
     "1. Edición del Mundial:",
@@ -70,11 +78,10 @@ selected_wc_row = world_cups[world_cups['edition_label'] == selected_wc_label].i
 comp_id = selected_wc_row['competition_id']
 season_id = selected_wc_row['season_id']
 
-# Cargar partidos del Mundial elegido
 raw_matches = load_matches(comp_id, season_id)
 
-# 2. Etapa del torneo (Fase de grupos, Cuartos, Final, etc.)
-available_stages = ["Todas las etapas"] + sorted(raw_matches['stage'].unique().tolist())
+# 2. Etapa del torneo (Usando la columna corregida)
+available_stages = ["Todas las etapas"] + sorted(raw_matches['stage_display'].dropna().unique().tolist())
 selected_stage = st.sidebar.selectbox(
     "2. Etapa del Torneo:",
     options=available_stages
@@ -86,20 +93,18 @@ draw_option = st.sidebar.selectbox(
     options=["Todos los partidos", "Solo empatados", "Solo no empatados (Victorias)"]
 )
 
-# --- APLICAR FILTROS EN CASCADA ---
+# --- FILTRADO EN CASCADA ---
 filtered_matches = raw_matches.copy()
 
-# Aplicar filtro de etapa
 if selected_stage != "Todas las etapas":
-    filtered_matches = filtered_matches[filtered_matches['stage'] == selected_stage]
+    filtered_matches = filtered_matches[filtered_matches['stage_display'] == selected_stage]
 
-# Aplicar filtro de empates
 if draw_option == "Solo empatados":
     filtered_matches = filtered_matches[filtered_matches['is_draw'] == True]
 elif draw_option == "Solo no empatados (Victorias)":
     filtered_matches = filtered_matches[filtered_matches['is_draw'] == False]
 
-# 4. Selector de Partido (basado en las opciones filtradas)
+# 4. Selector de Partido
 if not filtered_matches.empty:
     selected_match_label = st.sidebar.selectbox(
         "4. Selecciona el partido:",
@@ -108,7 +113,6 @@ if not filtered_matches.empty:
 
     selected_match_id = filtered_matches[filtered_matches['match_label'] == selected_match_label]['match_id'].values[0]
 
-    # --- VISTA PRINCIPAL ---
     st.subheader(f"Mundial {selected_wc_label} — {selected_match_label}")
 
     with st.spinner("Cargando pases del partido..."):
@@ -120,7 +124,6 @@ if not filtered_matches.empty:
     max_min = int(final['minute'].max()) if not final.empty else 90
     minuto = st.slider("Selecciona el minuto del partido:", min_value=0, max_value=max_min, value=0)
 
-    # Gráfica
     fig, ax = plt.subplots(figsize=(10, 7))
     pitch = Pitch(pitch_color='grass', line_color='white', stripe=True)
     pitch.draw(ax=ax)
